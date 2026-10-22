@@ -10,6 +10,8 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: settings
+    description: User settings
 paths:
   /healthz:
     get:
@@ -24,6 +26,54 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /settings/football-api:
+    get:
+      operationId: getFootballApiSettings
+      tags: [settings]
+      summary: Get current user's Football API key status
+      responses:
+        "200":
+          description: Current key configuration status without exposing the key
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FootballApiSettings"
+        "401":
+          description: Sign-in required
+    put:
+      operationId: saveFootballApiKey
+      tags: [settings]
+      summary: Encrypt and save the current user's Football API key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SaveFootballApiKeyInput"
+      responses:
+        "200":
+          description: Key saved; the key itself is never returned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FootballApiSettings"
+        "400":
+          description: Invalid API key
+        "401":
+          description: Sign-in required
+    delete:
+      operationId: deleteFootballApiKey
+      tags: [settings]
+      summary: Remove the current user's Football API key
+      responses:
+        "200":
+          description: Current user's key removed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FootballApiSettings"
+        "401":
+          description: Sign-in required
 components:
   schemas:
     HealthStatus:
@@ -33,4 +83,24 @@ components:
           type: string
       required:
         - status
+    FootballApiSettings:
+      type: object
+      properties:
+        configured:
+          type: boolean
+        lastUpdated:
+          type: ["string", "null"]
+          format: date-time
+      required:
+        - configured
+        - lastUpdated
+    SaveFootballApiKeyInput:
+      type: object
+      properties:
+        apiKey:
+          type: string
+          minLength: 10
+          maxLength: 256
+      required:
+        - apiKey
 

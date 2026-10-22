@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState, type Dispatch, type ReactNode, type SetStateAction } from 'react';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
-import { Route, Switch, useLocation, Router as WouterRouter, Link } from 'wouter';
+import { Redirect, Route, Switch, useLocation, Router as WouterRouter, Link } from 'wouter';
+import { ClerkProvider, SignIn, SignUp, Show, useClerk, useUser } from '@clerk/react';
+import { publishableKeyFromHost } from '@clerk/react/internal';
+import { shadcn } from '@clerk/themes';
+import { hrHR } from '@clerk/localizations';
+import { getGetFootballApiSettingsQueryKey, useGetFootballApiSettings, useSaveFootballApiKey, useDeleteFootballApiKey } from '@workspace/api-client-react';
 import {
   Activity, AlertTriangle, ArrowRight, Banknote,
   Check, CheckCircle2, CircleHelp, ClipboardList, Clock3, Crosshair, Download, Goal,
@@ -33,6 +38,10 @@ type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void>; userChoic
 
 const STORE_KEY = 'kvote-arena-state-v1';
 const queryClient = new QueryClient();
+const clerkPubKey = publishableKeyFromHost(window.location.hostname, import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
+const clerkProxyUrl = import.meta.env.VITE_CLERK_PROXY_URL;
+const basePath = import.meta.env.BASE_URL.replace(/\/$/, '');
+const stripBase = (path: string) => basePath && path.startsWith(basePath) ? path.slice(basePath.length) || '/' : path;
 const dateIn = (days: number, hour: number) => {
   const date = new Date();
   date.setDate(date.getDate() + days);
@@ -128,7 +137,7 @@ const settledSample: Ticket[] = [
 ];
 const initialState: AppState = { picks: [], tickets: settledSample };
 const navItems: { path: string; label: string; icon: LucideIcon }[] = [
-  { path: '/', label: 'Pregled', icon: LayoutDashboard },
+  { path: '/app', label: 'Pregled', icon: LayoutDashboard },
   { path: '/football', label: 'Nogomet', icon: Goal },
   { path: '/handball', label: 'Rukomet', icon: Hand },
   { path: '/basketball', label: 'Košarka', icon: Activity },
@@ -137,9 +146,10 @@ const navItems: { path: string; label: string; icon: LucideIcon }[] = [
 ];
 const pathToSport: Record<string, Sport> = { '/football': 'Nogomet', '/handball': 'Rukomet', '/basketball': 'Košarka' };
 
-function readStore(): AppState {
+function readStore(userId: string | undefined): AppState {
+  if (!userId) return { picks: [], tickets: [] };
   try {
-    const stored = localStorage.getItem(STORE_KEY);
+    const stored = localStorage.getItem(`${STORE_KEY}:${userId}`);
     if (!stored) return initialState;
     const parsed = JSON.parse(stored) as Partial<AppState>;
     return {
@@ -156,17 +166,21 @@ function formatDate(value: string) {
 function initials(name: string) { return name.split(' ').map((word) => word[0]).slice(0, 2).join('').toUpperCase(); }
 function Router() {
   const [location, setLocation] = useLocation();
-  const [store, setStore] = useState<AppState>(readStore);
+  const { user } = useUser();
+  const userId = user?.id;
+  const loadedUser = useRef<string | undefined>(undefined);
+  const [store, setStore] = useState<AppState>(() => readStore(userId));
   const [stake, setStake] = useState('25');
   const [toast, setToast] = useState('');
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [ticketFilter, setTicketFilter] = useState<'all' | 'active' | 'settled'>('all');
 
-  useEffect(() => { localStorage.setItem(STORE_KEY, JSON.stringify(store)); }, [store]);
+  useEffect(() => { if (userId && loadedUser.current !== userId) { loadedUser.current = userId; setStore(readStore(userId)); } }, [userId]);
+  useEffect(() => { if (userId && loadedUser.current === userId) localStorage.setItem(`${STORE_KEY}:${userId}`, JSON.stringify(store)); }, [store, userId]);
   useEffect(() => {
     const promptHandler = (event: Event) => { event.preventDefault(); setInstallPrompt(event as BeforeInstallPromptEvent); };
     window.addEventListener('beforeinstallprompt', promptHandler);
-    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => undefined);
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register(`${basePath}/sw.js`).catch(() => undefined);
     return () => { window.removeEventListener('beforeinstallprompt', promptHandler); };
   }, []);
   useEffect(() => {
@@ -230,7 +244,7 @@ function Router() {
   return (
     <div className="app-shell">
       <aside className="side-nav" aria-label="Glavna navigacija">
-        <Link href="/" className="brand" data-testid="link-brand-home">
+        <Link href="/app" className="brand" data-testid="link-brand-home">
           <span className="brand-mark"><Crosshair size={20} strokeWidth={2.5} /></span>
           <span className="brand-word">kvote<span>arena</span></span>
         </Link>
@@ -251,10 +265,10 @@ function Router() {
       <main className="main-area">
         <header className="topbar">
           <div className="top-meta"><span className="live-dot" /><span>Demo arena</span><span className="desktop-only">· Podaci i kvote su simulirani</span></div>
-          <div className="balance-chip" data-testid="text-virtual-balance"><Banknote size={15} color="#75e3a8" /><span>Virtualno stanje</span><strong>{formatUnlimitedBalance()}</strong></div>
+          <div className="top-actions"><div className="balance-chip" data-testid="text-virtual-balance"><Banknote size={15} color="#75e3a8" /><span>Virtualno stanje</span><strong>{formatUnlimitedBalance()}</strong></div><ProfileControl /></div>
         </header>
         <Switch>
-          <Route path="/">
+          <Route path="/app">
             <div className="page-wrap">
               <div className="page-heading">
                 <div><div className="eyebrow">Dobro došli u svoju sportsku arenu</div><h1>Odaberi. Složi. Igraj.</h1><p className="page-subtitle">Isprobaj sportske prognoze uz virtualne kredite — bez rizika i bez stvarnog novca.</p></div>
@@ -299,17 +313,7 @@ function Router() {
                   <div className="setting-row"><span>Ukupno listića</span><strong>{store.tickets.length}</strong></div>
                   <div className="settings-actions"><button className="secondary-button danger" onClick={clearStore} data-testid="button-reset-demo"><RotateCcw size={14} /> Vrati demo podatke</button></div>
                 </section>
-                <section className="settings-card">
-                  <h2><Activity size={17} color="#82dda2" /> Izvor sportskih podataka</h2><p>U ovoj verziji koriste se lokalni demo događaji i izmišljene kvote. Nije povezan live feed.</p>
-                  <div className="api-status"><span className="api-status-icon"><AlertTriangle size={15} /></span><div><strong>API-Football nije konfiguriran</strong><p>Nije dodan API_FOOTBALL_KEY kao tajna projekta. Prikazuju se samo lokalni primjeri.</p></div></div>
-                  <div className="code-note">API ključ dodajte u Replit Secrets — nikad u preglednik.</div>
-                  <div className="help-label">Sigurno postavljanje, kada bude potrebno</div>
-                  <ol className="guide-list">
-                    <li>U Replit alatu otvorite <b>Secrets</b> za projekt.</li>
-                    <li>Spremite ključ kao tajnu u okruženju, primjerice <b>API_FOOTBALL_KEY</b>.</li>
-                    <li>Koristite ga samo iz poslužiteljskog koda. Nemojte ga spremati u localStorage, frontend ili javni repozitorij.</li>
-                  </ol>
-                </section>
+                <FootballApiSettingsCard />
                 <section className="settings-card">
                   <h2><Smartphone size={17} color="#82dda2" /> Instaliraj aplikaciju</h2><p>Kvote Arena može se instalirati na početni zaslon ako instalaciju podržava tvoj preglednik.</p>
                   <button className="secondary-button" onClick={installApp} data-testid="button-install-app"><Plus size={14} /> {installPrompt ? 'Instaliraj aplikaciju' : 'Upute za instalaciju'}</button>
@@ -442,17 +446,95 @@ function TicketStatusIcon({ status }: { status: Ticket['status'] }) {
   return <Clock3 size={12} />;
 }
 
+function HomeGate() {
+  return <><Show when="signed-in"><Redirect to="/app" /></Show><Show when="signed-out"><LandingPage /></Show></>;
+}
+function AuthenticatedApplication() {
+  return <><Show when="signed-in"><Router /></Show><Show when="signed-out"><Redirect to="/" /></Show></>;
+}
+function LandingPage() {
+  return <main className="landing">
+    <header className="landing-nav"><Link href="/" className="brand"><span className="brand-mark"><Crosshair size={20} /></span><span className="brand-word">kvote<span>arena</span></span></Link><span className="landing-trust"><span className="live-dot" /> VIRTUALNO, UVIJEK</span><div className="landing-links"><Link href="/sign-in" className="landing-login">Prijava</Link><Link href="/sign-up" className="landing-cta">Otvori arenu <ArrowRight size={15} /></Link></div></header>
+    <section className="landing-hero">
+      <div className="landing-kicker"><span>HR</span> SPORTSKA ARENA ZA NAVIJAČE <span className="kicker-line" /></div>
+      <h1>Čitaj igru.<br /><em>Ne riskiraj.</em></h1>
+      <p>Isprobaj nogometna, rukometna i košarkaška tržišta uz virtualne listiće. Bez uplata. Bez isplata. Samo ti i tvoja procjena.</p>
+      <div className="landing-buttons"><Link href="/sign-up" className="landing-cta large">Uđi u arenu <ArrowRight size={17} /></Link><Link href="/sign-in" className="landing-secondary">Već imaš račun? Prijavi se</Link></div>
+      <div className="landing-footnote"><ShieldCheck size={15} /> Simulator za zabavu i učenje — nema stvarnog novca.</div>
+      <div className="landing-scoreboard" aria-label="Primjer virtualnih kvota">
+        <div className="score-head"><span>VEČERAŠNJI DERBI</span><span>PRIMJER · DEMO KVOTE</span></div>
+        <div className="score-match"><div><small>HRVATSKA · PRVA LIGA</small><strong>Dinamo Zagreb <span>—</span> Hajduk Split</strong></div><div className="score-time">20:00 <span>POČETAK</span></div></div>
+        <div className="score-markets"><span>1 <b>2.08</b></span><span>X <b>3.32</b></span><span>2 <b>3.48</b></span></div>
+        <div className="score-bottom"><span><span className="live-dot" /> SIMULIRANI DOGAĐAJ</span><span>KVOTE NEMAJU NOVČANU VRIJEDNOST</span></div>
+      </div>
+      <div className="hero-orbit orbit-one" /><div className="hero-orbit orbit-two" /><div className="hero-index">01 / 03</div>
+    </section>
+    <section className="landing-strip"><span>PRATI SVOJ SPORT</span><strong>NOGOMET</strong><i /> <strong>RUKOMET</strong><i /> <strong>KOŠARKA</strong><span className="strip-note">VIRTUALNO I SIGURNO</span></section>
+    <section className="landing-story"><div className="story-label">01 — KAKO FUNKCIONIRA</div><div><h2>Stadion je tvoj.<br /><span>Ulog je samo ideja.</span></h2><p>Odaberi tržište, složi listić i prati kako bi prošao. Kvote i događaji su simulirani primjeri, a tvoja povijest listića ostaje samo na tvom uređaju.</p><Link href="/sign-up" className="text-link">Započni bez rizika <ArrowRight size={15} /></Link></div><div className="story-stamp"><Crosshair size={31} /><span>KVOTE<br />ARENA</span></div></section>
+    <section className="landing-sports"><div className="story-label">02 — TRI IGRE. JEDNA ARENA.</div><div className="sport-panels"><article><span>01 / NOGOMET</span><Goal /><h3>90 minuta.<br />Svaki ishod.</h3><p>Konačan rezultat, golovi i oba daju gol.</p></article><article><span>02 / RUKOMET</span><Hand /><h3>Brza igra.<br />Čista procjena.</h3><p>Pobjednik, dvostruka šansa i broj pogodaka.</p></article><article><span>03 / KOŠARKA</span><Activity /><h3>Svaki posjed.<br />Svaka poena.</h3><p>Pobjednik, ukupni poeni i hendikep.</p></article></div></section>
+    <section className="landing-promise"><div className="promise-mark"><ShieldCheck size={26} /></div><div><span>JASNA PRAVILA, BEZ SITNIH SLOVA</span><h2>Demo krediti.<br />Stvarno sigurna igra.</h2></div><p>Kvote Arena je simulator sportskih prognoza. Nema depozita, isplata ni novčanih dobitaka. Svi podaci prikazuju se kao demo.</p><Link href="/sign-up" className="landing-cta">Napravi račun <ArrowRight size={15} /></Link></section>
+    <footer className="landing-footer"><Link href="/" className="brand"><span className="brand-mark"><Crosshair size={17} /></span><span className="brand-word">kvote<span>arena</span></span></Link><span>SPORTSKA SIMULACIJA · HRVATSKA</span><span>© KVOTE ARENA</span></footer>
+  </main>;
+}
+function SignInPage() { return <main className="auth-page"><div className="auth-aside"><Link href="/" className="brand"><span className="brand-mark"><Crosshair size={20} /></span><span className="brand-word">kvote<span>arena</span></span></Link><span className="auth-kicker">DOBRODOŠAO NATRAG</span><h1>Još jedan<br />pogled na igru.</h1><p>Uđi u svoju virtualnu arenu i nastavi tamo gdje si stao.</p><span className="auth-disclaimer">Samo demo. Bez uloga stvarnog novca.</span></div><section className="auth-form-wrap"><SignIn routing="path" path={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} /></section></main>; }
+function SignUpPage() { return <main className="auth-page"><div className="auth-aside"><Link href="/" className="brand"><span className="brand-mark"><Crosshair size={20} /></span><span className="brand-word">kvote<span>arena</span></span></Link><span className="auth-kicker">TVOJA IGRA POČINJE OVDJE</span><h1>Uđi u igru.<br />Bez rizika.</h1><p>Isprobaj tržišta, testiraj procjenu i prati virtualne listiće.</p><span className="auth-disclaimer">Nema uplata. Nema isplata. Samo simulacija.</span></div><section className="auth-form-wrap"><SignUp routing="path" path={`${basePath}/sign-up`} signInUrl={`${basePath}/sign-in`} /></section></main>; }
+function ProfileControl() {
+  const { user } = useUser(); const { signOut } = useClerk();
+  const label = user?.fullName || user?.primaryEmailAddress?.emailAddress || 'Moj profil';
+  return <div className="profile-control"><span className="profile-avatar">{initials(label)}</span><span className="profile-name">{label}</span><button type="button" onClick={() => signOut({ redirectUrl: basePath || '/' })} data-testid="button-sign-out">Odjava</button></div>;
+}
+function ClerkQueryClientCacheInvalidator() {
+  const { addListener } = useClerk(); const client = useQueryClient(); const previous = useRef<string | null | undefined>(undefined);
+  useEffect(() => addListener(({ user }) => { const id = user?.id ?? null; if (previous.current !== undefined && previous.current !== id) client.clear(); previous.current = id; }), [addListener, client]);
+  return null;
+}
+function FootballApiSettingsCard() {
+  const client = useQueryClient();
+  const query = useGetFootballApiSettings({ query: { queryKey: getGetFootballApiSettingsQueryKey() } });
+  const save = useSaveFootballApiKey(); const remove = useDeleteFootballApiKey();
+  const [apiKey, setApiKey] = useState(''); const [message, setMessage] = useState('');
+  const refresh = () => client.invalidateQueries({ queryKey: getGetFootballApiSettingsQueryKey() });
+  const saveKey = () => { if (apiKey.length < 10 || apiKey.length > 256) { setMessage('Ključ mora sadržavati 10–256 znakova.'); return; } setMessage(''); save.mutate({ data: { apiKey } }, { onSuccess: () => { setApiKey(''); setMessage('Ključ je sigurno spremljen.'); void refresh(); }, onError: () => setMessage('Spremanje nije uspjelo. Pokušaj ponovno.') }); };
+  const removeKey = () => { if (!window.confirm('Ukloniti spremljeni Football API ključ?')) return; setMessage(''); remove.mutate(undefined, { onSuccess: () => { setApiKey(''); setMessage('Ključ je uklonjen.'); void refresh(); }, onError: () => setMessage('Uklanjanje nije uspjelo. Pokušaj ponovno.') }); };
+  return <section className="settings-card football-api-card">
+    <h2><Activity size={17} color="#82dda2" /> Football API ključ</h2><p>Ključ je povezan samo s tvojim računom. Sprema se šifrirano i nikad se ne prikazuje nakon spremanja.</p>
+    {query.isLoading ? <div className="api-skeleton"><span /><span /></div> : query.isError ? <div className="api-status"><AlertTriangle size={16} /><div><strong>Status nije dostupan</strong><p>Provjeri vezu i pokušaj ponovno.</p></div><button className="secondary-button" onClick={() => void query.refetch()}>Pokušaj ponovno</button></div> : <div className={`api-status ${query.data?.configured ? 'configured' : ''}`}><span className="api-status-icon">{query.data?.configured ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}</span><div><strong>{query.data?.configured ? 'Ključ je spremljen' : 'Ključ nije spremljen'}</strong><p>{query.data?.lastUpdated ? `Zadnje ažuriranje: ${new Intl.DateTimeFormat('hr-HR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(query.data.lastUpdated))}` : 'Poveži vlastiti API ključ ako želiš konfigurirati osobni izvor podataka.'}</p></div></div>}
+    <label className="api-key-label" htmlFor="football-api-key">API ključ</label><input id="football-api-key" className="api-key-input" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Unesi novi ključ" data-testid="input-football-api-key" />
+    <div className="api-key-actions"><button className="submit-button" disabled={!apiKey || save.isPending} onClick={saveKey} data-testid="button-save-football-api-key">{save.isPending ? 'Spremanje…' : 'Spremi ključ'}</button><button className="secondary-button danger" disabled={!query.data?.configured || remove.isPending} onClick={removeKey} data-testid="button-delete-football-api-key"><Trash2 size={14} /> Ukloni ključ</button></div>
+    {message && <p className="api-feedback" role="status">{message}</p>}
+    <p className="key-privacy"><ShieldCheck size={14} /> Uneseni ključ ostaje samo u memoriji ove stranice i briše se nakon uspješnog spremanja.</p>
+  </section>;
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, '')}>
-          <RoutedErrorBoundary><Router /></RoutedErrorBoundary>
+        <WouterRouter base={basePath}>
+          <ClerkRoutes />
         </WouterRouter>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>
   );
+}
+function ClerkRoutes() {
+  const [, setLocation] = useLocation();
+  return <ClerkProvider publishableKey={clerkPubKey} proxyUrl={clerkProxyUrl} appearance={{ theme: shadcn, cssLayerName: 'clerk', options: { logoPlacement: 'inside', logoLinkUrl: basePath || '/', logoImageUrl: `${window.location.origin}${basePath}/logo.svg` }, variables: { colorPrimary: '#54cf91', colorForeground: '#e9f0ea', colorMutedForeground: '#96a39b', colorDanger: '#d56c62', colorBackground: '#151d20', colorInput: '#101719', colorInputForeground: '#e9f0ea', colorNeutral: '#35443e', fontFamily: 'Manrope, sans-serif', borderRadius: '0.7rem' }, elements: { rootBox: 'w-full flex justify-center', cardBox: 'bg-[#151d20] rounded-2xl w-[440px] max-w-full overflow-hidden border border-[#34443d]', card: '!shadow-none !border-0 !bg-transparent !rounded-none', footer: '!shadow-none !border-0 !bg-transparent !rounded-none', headerTitle: 'text-[#edf4ee]', headerSubtitle: 'text-[#a4b1a8]', socialButtonsBlockButtonText: 'text-[#eaf1eb]', formFieldLabel: 'text-[#cbd7cf]', footerActionLink: 'text-[#70d9a0]', footerActionText: 'text-[#a4b1a8]', dividerText: 'text-[#96a39b]', identityPreviewEditButton: 'text-[#70d9a0]', formFieldSuccessText: 'text-[#70d9a0]', alertText: 'text-[#f2c7bd]', logoBox: 'rounded-xl', socialButtonsBlockButton: 'border border-[#3a4a43] bg-[#1b2525]', formButtonPrimary: 'bg-[#54cf91] text-[#07150d]', formFieldInput: 'border-[#3a4a43] bg-[#101719] text-[#e9f0ea]', footerAction: 'border-[#34443d]', dividerLine: 'bg-[#34443d]', alert: 'border-[#805b50] bg-[#392b28]', otpCodeFieldInput: 'border-[#3a4a43] bg-[#101719]', formFieldRow: 'text-[#cbd7cf]', main: 'text-[#e9f0ea]' } }} localization={hrHR} signInUrl={`${basePath}/sign-in`} signUpUrl={`${basePath}/sign-up`} routerPush={(to) => setLocation(stripBase(to))} routerReplace={(to) => setLocation(stripBase(to), { replace: true })}>
+    <ClerkQueryClientCacheInvalidator />
+    <RoutedErrorBoundary><Switch>
+      <Route path="/"><HomeGate /></Route>
+      <Route path="/sign-in/*?" component={SignInPage} />
+      <Route path="/sign-up/*?" component={SignUpPage} />
+      <Route path="/app" component={AuthenticatedApplication} />
+      <Route path="/football" component={AuthenticatedApplication} />
+      <Route path="/handball" component={AuthenticatedApplication} />
+      <Route path="/basketball" component={AuthenticatedApplication} />
+      <Route path="/tickets" component={AuthenticatedApplication} />
+      <Route path="/settings" component={AuthenticatedApplication} />
+      <Route><Show when="signed-in"><NotFound /></Show><Show when="signed-out"><Redirect to="/" /></Show></Route>
+    </Switch></RoutedErrorBoundary>
+  </ClerkProvider>;
 }
 function RoutedErrorBoundary({ children }: { children: ReactNode }) {
   const [location] = useLocation();
