@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Kvote Arena"
+description = "Hrvatska PWA za simulaciju sportskog klađenja bez novčanih uplata ili isplata, s virtualnim listićem za nogomet, rukomet i košarku."
+version = "1.0.0"
+id = "artifacts/kvote-arena"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23939
+
+[services.development]
+run = "pnpm --filter @workspace/kvote-arena run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/kvote-arena", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/kvote-arena/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23939"
+BASE_PATH = "/"
